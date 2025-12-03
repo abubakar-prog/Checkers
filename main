@@ -2,14 +2,38 @@
 #include <fstream>
 #include <cstdlib>
 #include <ctime>
-#include <optional>
+
+using namespace std;
+using namespace sf;
 
 const int SIZE = 8;
 const int CELL_SIZE = 60;
 const int WINDOW_SIZE = (SIZE * CELL_SIZE);
+const int MAX_MOVES = 100;
+
+// Game states
+const int STATE_MAIN_MENU = 0;
+const int STATE_PLAYING = 1;
+const int STATE_PLAYER_WON = 2;
+const int STATE_PLAYER_LOST = 3;
+const int STATE_SETTINGS = 4;
+
+// Theme colors
+bool darkTheme = false;
+Color lightBoardColor1(240, 217, 181);
+Color lightBoardColor2(181, 136, 99);
+Color darkBoardColor1(60, 70, 80);
+Color darkBoardColor2(30, 40, 50);
+
 int board[SIZE][SIZE];
 int selectedR = -1, selectedC = -1;
 int currentPlayer = 1;
+int gameState = STATE_MAIN_MENU;
+int selectedMenuOption = 0;
+
+// Move storage: [moveIndex][0=r1, 1=c1, 2=r2, 3=c2]
+int moves[MAX_MOVES][4];
+int jumpMoves[MAX_MOVES][4];
 
 void initBoard() {
     for (int r = 0; r < SIZE; r++) {
@@ -23,17 +47,19 @@ void initBoard() {
             if ((r + c) % 2 == 1) board[r][c] = 1;
 }
 
-void saveBoard(const std::string& path) {
-    std::ofstream f(path);
+void saveBoard(const char* path) {
+    ofstream f(path);
+    f << darkTheme << "\n";
     for (int r = 0; r < SIZE; r++) {
         for (int c = 0; c < SIZE; c++) f << board[r][c] << " ";
         f << "\n";
     }
 }
 
-bool loadBoard(const std::string& path) {
-    std::ifstream f(path);
+bool loadBoard(const char* path) {
+    ifstream f(path);
     if (!f.is_open()) return false;
+    f >> darkTheme;
     for (int r = 0; r < SIZE; r++)
         for (int c = 0; c < SIZE; c++) f >> board[r][c];
     return true;
@@ -43,151 +69,216 @@ bool inside(int r, int c) {
     return r >= 0 && r < SIZE && c >= 0 && c < SIZE;
 }
 
+bool isKing(int piece) {
+    return piece == 3 || piece == 4;
+}
+
+int getPlayer(int piece) {
+    if (piece == 1 || piece == 3) return 1;
+    if (piece == 2 || piece == 4) return 2;
+    return 0;
+}
+
 bool isValidMove(int r1, int c1, int r2, int c2, int player) {
-    // 1. Check if the destination square is valid and empty
     if (!inside(r2, c2) || board[r2][c2] != 0) {
         return false;
     }
 
-    int dr = r2 - r1; // Change in row
-    int dc = c2 - c1; // Change in column
+    int piece = board[r1][c1];
+    if (getPlayer(piece) != player) return false;
+
+    int dr = r2 - r1;
+    int dc = c2 - c1;
     int abs_dr = abs(dr);
     int abs_dc = abs(dc);
 
-    // 2. Check for a standard single-step diagonal move
     if (abs_dr == 1 && abs_dc == 1) {
-        // Player 1 moves up (dr = -1). Player 2 moves down (dr = 1).
+        if (isKing(piece)) {
+            return true;
+        }
         if ((player == 1 && dr == -1) || (player == 2 && dr == 1)) {
             return true;
         }
     }
 
-    // --- Check for a diagonal jump/capture move ---
     if (abs_dr == 2 && abs_dc == 2) {
-        // Player 1 moves up two rows (dr = -2). Player 2 moves down two rows (dr = 2).
-        if ((player == 1 && dr == -2) || (player == 2 && dr == 2)) {
-            // Calculate the position of the piece being jumped over (midpoint)
-            int r_mid = r1 + dr / 2; // (r1 + r2) / 2
-            int c_mid = c1 + dc / 2; // (c1 + c2) / 2
-
-            // Determine the opponent's ID
+        if (isKing(piece)) {
+            int r_mid = r1 + dr / 2;
+            int c_mid = c1 + dc / 2;
             int opponent = (player == 1) ? 2 : 1;
-
-            // Check if the piece in the middle is the opponent's piece
-            if (board[r_mid][c_mid] == opponent) {
+            int midPiece = board[r_mid][c_mid];
+            if (getPlayer(midPiece) == opponent) {
                 return true;
+            }
+        }
+        else {
+            if ((player == 1 && dr == -2) || (player == 2 && dr == 2)) {
+                int r_mid = r1 + dr / 2;
+                int c_mid = c1 + dc / 2;
+                int opponent = (player == 1) ? 2 : 1;
+                int midPiece = board[r_mid][c_mid];
+                if (getPlayer(midPiece) == opponent) {
+                    return true;
+                }
             }
         }
     }
 
-    // If none of the valid moves are met
     return false;
 }
 
 bool makeMove(int r1, int c1, int r2, int c2, int player) {
-    if (board[r1][c1] == player && isValidMove(r1, c1, r2, c2, player)) {
-        // Move the piece to the new location
-        board[r2][c2] = player;
+    int piece = board[r1][c1];
+    if (getPlayer(piece) == player && isValidMove(r1, c1, r2, c2, player)) {
+        board[r2][c2] = piece;
         board[r1][c1] = 0;
 
         int dr = r2 - r1;
         int dc = c2 - c1;
 
-        // Check if the move was a jump (abs diff of 2 in both coordinates)
         if (abs(dr) == 2 && abs(dc) == 2) {
-            // Calculate the position of the captured piece (midpoint)
             int r_mid = r1 + dr / 2;
             int c_mid = c1 + dc / 2;
-
-            // Remove the captured opponent's piece
             board[r_mid][c_mid] = 0;
+        }
 
-            // NOTE: In a full Checkers game, you'd also need logic here to:
-            // 1. Check if the *same* piece can make another jump (multiple jump turn).
-            // 2. Enforce mandatory jumps (if any jump is possible, the player must take it).
-            // 3. Promote the piece to a King if it reaches the opposite side (r2 is the King row).
+        if (player == 1 && r2 == 0 && piece == 1) {
+            board[r2][c2] = 3;
+        }
+        if (player == 2 && r2 == 7 && piece == 2) {
+            board[r2][c2] = 4;
         }
 
         return true;
     }
     return false;
 }
+
+int evaluateMove(int r1, int c1, int r2, int c2) {
+    int score = 0;
+    int piece = board[r1][c1];
+
+    int dr = r2 - r1;
+    int dc = c2 - c1;
+    if (abs(dr) == 2 && abs(dc) == 2) {
+        score += 100;
+
+        int r_mid = r1 + dr / 2;
+        int c_mid = c1 + dc / 2;
+        if (isKing(board[r_mid][c_mid])) {
+            score += 50;
+        }
+    }
+
+    if (piece == 2) {
+        score += r2;
+    }
+
+    if (piece == 2 && r2 == 7) {
+        score += 150;
+    }
+
+    if (isKing(piece)) {
+        int centerDist = abs(r2 - 3) + abs(c2 - 3);
+        score += (6 - centerDist) * 5;
+    }
+
+    if (!isKing(piece)) {
+        if (c2 == 0 || c2 == 7) {
+            score -= 10;
+        }
+    }
+
+    return score;
+}
+
 void aiMove() {
-    std::vector<std::tuple<int, int, int, int>> moves;
-    std::vector<std::tuple<int, int, int, int>> jumpMoves; // store 2-step kills
+    int moveCount = 0;
+    int jumpCount = 0;
+    int moveScores[MAX_MOVES];
 
     for (int r = 0; r < SIZE; r++) {
         for (int c = 0; c < SIZE; c++) {
-            if (board[r][c] == 2) { // AI piece
-
-                // ----- Normal 1-step moves -----
-                int r2_step1 = r + 1;
-                for (int dc : {-1, 1}) {
-                    int c2 = c + dc;
-                    if (isValidMove(r, c, r2_step1, c2, 2)) {
-                        moves.push_back({ r, c, r2_step1, c2 });
-                    }
-                }
-
-                // ----- Jump 2-step moves (captures) -----
-                int r2_step2 = r + 2;
-                for (int dc : {-2, 2}) {
-                    int c2 = c + dc;
-                    if (isValidMove(r, c, r2_step2, c2, 2)) {
-                        jumpMoves.push_back({ r, c, r2_step2, c2 });
-                        moves.push_back({ r, c, r2_step2, c2 }); // also put in global list
+            int piece = board[r][c];
+            if (getPlayer(piece) == 2) {
+                int directions[4] = { -2, -1, 1, 2 };
+                for (int i = 0; i < 4; i++) {
+                    int dr = directions[i];
+                    for (int j = 0; j < 4; j++) {
+                        int dc = directions[j];
+                        if (abs(dr) != abs(dc)) continue;
+                        int r2 = r + dr;
+                        int c2 = c + dc;
+                        if (isValidMove(r, c, r2, c2, 2)) {
+                            if (abs(dr) == 2 && jumpCount < MAX_MOVES) {
+                                jumpMoves[jumpCount][0] = r;
+                                jumpMoves[jumpCount][1] = c;
+                                jumpMoves[jumpCount][2] = r2;
+                                jumpMoves[jumpCount][3] = c2;
+                                jumpCount++;
+                            }
+                            if (moveCount < MAX_MOVES) {
+                                moves[moveCount][0] = r;
+                                moves[moveCount][1] = c;
+                                moves[moveCount][2] = r2;
+                                moves[moveCount][3] = c2;
+                                moveScores[moveCount] = evaluateMove(r, c, r2, c2);
+                                moveCount++;
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    // No available moves
-    if (moves.empty())
-        return;
+    if (moveCount == 0) return;
 
-    // ----- If jump moves exist, AI has 60% chance to choose a jump -----
-    if (!jumpMoves.empty()) {
-        int chance = std::rand() % 100;  // 0–99
-
-        if (chance < 50) {
-            // Choose a jump move (capture)
-            int idx = std::rand() % jumpMoves.size();
-            auto [r1, c1, r2, c2] = jumpMoves[idx];
-            makeMove(r1, c1, r2, c2, 2);
-            return;
+    if (jumpCount > 0) {
+        int bestIdx = 0;
+        int bestScore = evaluateMove(jumpMoves[0][0], jumpMoves[0][1],
+            jumpMoves[0][2], jumpMoves[0][3]);
+        for (int i = 1; i < jumpCount; i++) {
+            int score = evaluateMove(jumpMoves[i][0], jumpMoves[i][1],
+                jumpMoves[i][2], jumpMoves[i][3]);
+            if (score > bestScore) {
+                bestScore = score;
+                bestIdx = i;
+            }
         }
+        makeMove(jumpMoves[bestIdx][0], jumpMoves[bestIdx][1],
+            jumpMoves[bestIdx][2], jumpMoves[bestIdx][3], 2);
     }
-
-    // ----- Otherwise choose a random move from ALL legal moves -----
-    int idx = std::rand() % moves.size();
-    auto [r1, c1, r2, c2] = moves[idx];
-    makeMove(r1, c1, r2, c2, 2);
+    else {
+        int bestIdx = 0;
+        int bestScore = moveScores[0];
+        for (int i = 1; i < moveCount; i++) {
+            if (moveScores[i] > bestScore) {
+                bestScore = moveScores[i];
+                bestIdx = i;
+            }
+        }
+        makeMove(moves[bestIdx][0], moves[bestIdx][1],
+            moves[bestIdx][2], moves[bestIdx][3], 2);
+    }
 }
 
-
 bool hasValidMoves(int player) {
-    int dr_forward = (player == 1) ? -1 : 1; // -1 for P1 (up), +1 for P2 (down)
-
     for (int r = 0; r < SIZE; r++) {
         for (int c = 0; c < SIZE; c++) {
-            if (board[r][c] == player) {
-
-                // --- 1. Check for 1-step move ---
-                int r2_step1 = r + dr_forward;
-                for (int dc : {-1, 1}) {
-                    int c2 = c + dc;
-                    if (isValidMove(r, c, r2_step1, c2, player)) {
-                        return true;
-                    }
-                }
-
-                // --- 2. Check for 2-step jump move ---
-                int r2_step2 = r + (dr_forward * 2);
-                for (int dc : {-2, 2}) {
-                    int c2 = c + dc;
-                    if (isValidMove(r, c, r2_step2, c2, player)) {
-                        return true;
+            int piece = board[r][c];
+            if (getPlayer(piece) == player) {
+                int directions[4] = { -2, -1, 1, 2 };
+                for (int i = 0; i < 4; i++) {
+                    int dr = directions[i];
+                    for (int j = 0; j < 4; j++) {
+                        int dc = directions[j];
+                        if (abs(dr) != abs(dc)) continue;
+                        int r2 = r + dr;
+                        int c2 = c + dc;
+                        if (isValidMove(r, c, r2, c2, player)) {
+                            return true;
+                        }
                     }
                 }
             }
@@ -196,166 +287,428 @@ bool hasValidMoves(int player) {
     return false;
 }
 
-void drawBoard(sf::RenderWindow& window) {
-    sf::RectangleShape cell({ static_cast<float>(CELL_SIZE), static_cast<float>(CELL_SIZE) });
+bool hasAnyPieces(int player) {
+    for (int r = 0; r < SIZE; r++) {
+        for (int c = 0; c < SIZE; c++) {
+            if (getPlayer(board[r][c]) == player) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void drawBoard(RenderWindow& window) {
+    RectangleShape cell(Vector2f(static_cast<float>(CELL_SIZE), static_cast<float>(CELL_SIZE)));
+
+    Color color1 = darkTheme ? darkBoardColor1 : lightBoardColor1;
+    Color color2 = darkTheme ? darkBoardColor2 : lightBoardColor2;
 
     for (int r = 0; r < SIZE; r++) {
         for (int c = 0; c < SIZE; c++) {
             if ((r + c) % 2 == 0)
-                cell.setFillColor(sf::Color(240, 217, 181));
+                cell.setFillColor(color1);
             else
-                cell.setFillColor(sf::Color(181, 136, 99));
+                cell.setFillColor(color2);
 
-            cell.setPosition({ static_cast<float>(c * CELL_SIZE), static_cast<float>(r * CELL_SIZE) });
+            cell.setPosition(Vector2f(static_cast<float>(c * CELL_SIZE), static_cast<float>(r * CELL_SIZE)));
             window.draw(cell);
         }
     }
 
     if (selectedR != -1 && selectedC != -1) {
-        sf::RectangleShape highlight({ static_cast<float>(CELL_SIZE), static_cast<float>(CELL_SIZE) });
-        highlight.setPosition({ static_cast<float>(selectedC * CELL_SIZE), static_cast<float>(selectedR * CELL_SIZE) });
-        highlight.setFillColor(sf::Color(255, 255, 0, 100));
+        RectangleShape highlight(Vector2f(static_cast<float>(CELL_SIZE), static_cast<float>(CELL_SIZE)));
+        highlight.setPosition(Vector2f(static_cast<float>(selectedC * CELL_SIZE), static_cast<float>(selectedR * CELL_SIZE)));
+        highlight.setFillColor(Color(255, 255, 0, 100));
         window.draw(highlight);
 
-        int dr = (currentPlayer == 1) ? -1 : 1;
+        int directions[4] = { -2, -1, 1, 2 };
+        for (int i = 0; i < 4; i++) {
+            int dr = directions[i];
+            for (int j = 0; j < 4; j++) {
+                int dc = directions[j];
+                if (abs(dr) != abs(dc)) continue;
+                int r2 = selectedR + dr;
+                int c2 = selectedC + dc;
 
-        // ---- NORMAL 1-STEP DIAGONAL MOVES ----
-        for (int dc : {-1, 1}) {
-            int r2 = selectedR + dr;
-            int c2 = selectedC + dc;
-
-            if (isValidMove(selectedR, selectedC, r2, c2, currentPlayer)) {
-                sf::CircleShape dot(8.f);
-                dot.setFillColor(sf::Color(0, 255, 0, 150));
-                dot.setPosition({
-                    static_cast<float>(c2 * CELL_SIZE + CELL_SIZE / 2 - 8),
-                    static_cast<float>(r2 * CELL_SIZE + CELL_SIZE / 2 - 8)
-                    });
-                window.draw(dot);
-            }
-        }
-
-        // ---- JUMP / CAPTURE 2-STEP DIAGONAL MOVES ----
-        for (int dc : {-2, 2}) {
-            int r2 = selectedR + dr * 2;
-            int c2 = selectedC + dc;
-
-            if (isValidMove(selectedR, selectedC, r2, c2, currentPlayer)) {
-                sf::CircleShape dot(8.f);
-                dot.setFillColor(sf::Color(0, 200, 0, 200)); // slightly brighter for jumps
-                dot.setPosition({
-                    static_cast<float>(c2 * CELL_SIZE + CELL_SIZE / 2 - 8),
-                    static_cast<float>(r2 * CELL_SIZE + CELL_SIZE / 2 - 8)
-                    });
-                window.draw(dot);
+                if (isValidMove(selectedR, selectedC, r2, c2, currentPlayer)) {
+                    CircleShape dot(8.f);
+                    dot.setFillColor(Color(0, 255, 0, 150));
+                    dot.setPosition(Vector2f(
+                        static_cast<float>(c2 * CELL_SIZE + CELL_SIZE / 2 - 8),
+                        static_cast<float>(r2 * CELL_SIZE + CELL_SIZE / 2 - 8)
+                    ));
+                    window.draw(dot);
+                }
             }
         }
     }
 
-    sf::CircleShape piece(CELL_SIZE * 0.35f);
+    CircleShape piece(CELL_SIZE * 0.35f);
     piece.setOutlineThickness(2.f);
-    piece.setOutlineColor(sf::Color::Black);
+    piece.setOutlineColor(Color::Black);
 
     for (int r = 0; r < SIZE; r++) {
         for (int c = 0; c < SIZE; c++) {
-            if (board[r][c] == 1) {
-                piece.setFillColor(sf::Color(220, 20, 20));
-                piece.setPosition({ static_cast<float>(c * CELL_SIZE) + CELL_SIZE * 0.15f,
-                                  static_cast<float>(r * CELL_SIZE) + CELL_SIZE * 0.15f });
+            int p = board[r][c];
+            if (p == 1 || p == 3) {
+                piece.setFillColor(Color(220, 20, 20));
+                piece.setPosition(Vector2f(
+                    static_cast<float>(c * CELL_SIZE) + CELL_SIZE * 0.15f,
+                    static_cast<float>(r * CELL_SIZE) + CELL_SIZE * 0.15f
+                ));
                 window.draw(piece);
+
+                if (p == 3) {
+                    CircleShape crown(CELL_SIZE * 0.15f);
+                    crown.setFillColor(Color(255, 215, 0));
+                    crown.setPosition(Vector2f(
+                        static_cast<float>(c * CELL_SIZE) + CELL_SIZE * 0.35f,
+                        static_cast<float>(r * CELL_SIZE) + CELL_SIZE * 0.3f
+                    ));
+                    window.draw(crown);
+                }
             }
-            else if (board[r][c] == 2) {
-                piece.setFillColor(sf::Color(40, 40, 40)); 
-                piece.setPosition({ static_cast<float>(c * CELL_SIZE) + CELL_SIZE * 0.15f,
-                                  static_cast<float>(r * CELL_SIZE) + CELL_SIZE * 0.15f });
+            else if (p == 2 || p == 4) {
+                piece.setFillColor(Color(40, 40, 40));
+                piece.setPosition(Vector2f(
+                    static_cast<float>(c * CELL_SIZE) + CELL_SIZE * 0.15f,
+                    static_cast<float>(r * CELL_SIZE) + CELL_SIZE * 0.15f
+                ));
                 window.draw(piece);
+
+                if (p == 4) {
+                    CircleShape crown(CELL_SIZE * 0.15f);
+                    crown.setFillColor(Color(192, 192, 192));
+                    crown.setPosition(Vector2f(
+                        static_cast<float>(c * CELL_SIZE) + CELL_SIZE * 0.35f,
+                        static_cast<float>(r * CELL_SIZE) + CELL_SIZE * 0.3f
+                    ));
+                    window.draw(crown);
+                }
             }
         }
     }
 }
 
+void drawMenu(RenderWindow& window, Font& font) {
+    Color bgColor = darkTheme ? Color(25, 25, 35) : Color(50, 50, 70);
+    window.clear(bgColor);
+
+    Text title(font);
+    title.setString("CHECKERS");
+    title.setCharacterSize(70);
+    title.setFillColor(Color::White);
+    title.setStyle(Text::Bold);
+    FloatRect titleBounds = title.getLocalBounds();
+    title.setPosition(Vector2f(WINDOW_SIZE / 2.f - titleBounds.size.x / 2.f, 40.f));
+    window.draw(title);
+
+    const char* options[4] = { "New Game", "Continue", "Settings", "Quit" };
+    for (int i = 0; i < 4; i++) {
+        RectangleShape button(Vector2f(280.f, 50.f));
+        button.setPosition(Vector2f(WINDOW_SIZE / 2.f - 140.f, 160.f + i * 70.f));
+
+        if (i == selectedMenuOption) {
+            button.setFillColor(Color(100, 120, 200));
+        }
+        else {
+            button.setFillColor(Color(70, 80, 100));
+        }
+        button.setOutlineThickness(2.f);
+        button.setOutlineColor(Color(150, 150, 150));
+        window.draw(button);
+
+        Text optionText(font);
+        optionText.setString(options[i]);
+        optionText.setCharacterSize(24);
+        optionText.setFillColor(Color::White);
+        FloatRect textBounds = optionText.getLocalBounds();
+        optionText.setPosition(Vector2f(
+            WINDOW_SIZE / 2.f - textBounds.size.x / 2.f,
+            168.f + i * 70.f
+        ));
+        window.draw(optionText);
+    }
+
+    Text hint(font);
+    hint.setString("Use Arrow Keys to navigate, Enter to select");
+    hint.setCharacterSize(14);
+    hint.setFillColor(Color(150, 150, 150));
+    FloatRect hintBounds = hint.getLocalBounds();
+    hint.setPosition(Vector2f(WINDOW_SIZE / 2.f - hintBounds.size.x / 2.f, 440.f));
+    window.draw(hint);
+
+    window.display();
+}
+
+void drawSettings(RenderWindow& window, Font& font) {
+    Color bgColor = darkTheme ? Color(25, 25, 35) : Color(50, 50, 70);
+    window.clear(bgColor);
+
+    Text title(font);
+    title.setString("SETTINGS");
+    title.setCharacterSize(50);
+    title.setFillColor(Color::White);
+    title.setStyle(Text::Bold);
+    FloatRect titleBounds = title.getLocalBounds();
+    title.setPosition(Vector2f(WINDOW_SIZE / 2.f - titleBounds.size.x / 2.f, 60.f));
+    window.draw(title);
+
+    Text themeLabel(font);
+    themeLabel.setString("Theme:");
+    themeLabel.setCharacterSize(24);
+    themeLabel.setFillColor(Color(200, 200, 200));
+    themeLabel.setPosition(Vector2f(80.f, 180.f));
+    window.draw(themeLabel);
+
+    RectangleShape lightButton(Vector2f(120.f, 45.f));
+    lightButton.setPosition(Vector2f(100.f, 230.f));
+    lightButton.setFillColor(darkTheme ? Color(80, 80, 90) : Color(100, 150, 200));
+    lightButton.setOutlineThickness(2.f);
+    lightButton.setOutlineColor(Color(150, 150, 150));
+    window.draw(lightButton);
+
+    Text lightText(font);
+    lightText.setString("Light");
+    lightText.setCharacterSize(20);
+    lightText.setFillColor(Color::White);
+    FloatRect lightBounds = lightText.getLocalBounds();
+    lightText.setPosition(Vector2f(160.f - lightBounds.size.x / 2.f, 240.f));
+    window.draw(lightText);
+
+    RectangleShape darkButton(Vector2f(120.f, 45.f));
+    darkButton.setPosition(Vector2f(260.f, 230.f));
+    darkButton.setFillColor(darkTheme ? Color(100, 150, 200) : Color(80, 80, 90));
+    darkButton.setOutlineThickness(2.f);
+    darkButton.setOutlineColor(Color(150, 150, 150));
+    window.draw(darkButton);
+
+    Text darkText(font);
+    darkText.setString("Dark");
+    darkText.setCharacterSize(20);
+    darkText.setFillColor(Color::White);
+    FloatRect darkBounds = darkText.getLocalBounds();
+    darkText.setPosition(Vector2f(320.f - darkBounds.size.x / 2.f, 240.f));
+    window.draw(darkText);
+
+    Text backText(font);
+    backText.setString("Press ESC to go back");
+    backText.setCharacterSize(16);
+    backText.setFillColor(Color(150, 150, 150));
+    FloatRect backBounds = backText.getLocalBounds();
+    backText.setPosition(Vector2f(WINDOW_SIZE / 2.f - backBounds.size.x / 2.f, 380.f));
+    window.draw(backText);
+
+    window.display();
+}
+
+void drawEndScreen(RenderWindow& window, Font& font, bool playerWon) {
+    Color bgColor = darkTheme ? Color(25, 25, 35) : Color(40, 40, 50);
+    window.clear(bgColor);
+
+    const char* resultText = playerWon ? "YOU WIN!" : "YOU LOSE!";
+    Text result(font);
+    result.setString(resultText);
+    result.setCharacterSize(70);
+    result.setFillColor(playerWon ? Color(100, 255, 100) : Color(255, 100, 100));
+    result.setStyle(Text::Bold);
+    FloatRect resultBounds = result.getLocalBounds();
+    result.setPosition(Vector2f(WINDOW_SIZE / 2.f - resultBounds.size.x / 2.f, 120.f));
+    window.draw(result);
+
+    const char* messageText = playerWon ? "Congratulations!" : "Better luck next time!";
+    Text message(font);
+    message.setString(messageText);
+    message.setCharacterSize(25);
+    message.setFillColor(Color(200, 200, 200));
+    FloatRect msgBounds = message.getLocalBounds();
+    message.setPosition(Vector2f(WINDOW_SIZE / 2.f - msgBounds.size.x / 2.f, 220.f));
+    window.draw(message);
+
+    Text playAgain(font);
+    playAgain.setString("Click to play again");
+    playAgain.setCharacterSize(20);
+    playAgain.setFillColor(Color(180, 180, 180));
+    FloatRect playBounds = playAgain.getLocalBounds();
+    playAgain.setPosition(Vector2f(WINDOW_SIZE / 2.f - playBounds.size.x / 2.f, 300.f));
+    window.draw(playAgain);
+
+    Text menu(font);
+    menu.setString("Press ESC for main menu");
+    menu.setCharacterSize(16);
+    menu.setFillColor(Color(160, 160, 160));
+    FloatRect menuBounds = menu.getLocalBounds();
+    menu.setPosition(Vector2f(WINDOW_SIZE / 2.f - menuBounds.size.x / 2.f, 340.f));
+    window.draw(menu);
+
+    window.display();
+}
+
 int main()
 {
-    std::srand(static_cast<unsigned>(std::time(nullptr)));
+    srand(static_cast<unsigned>(time(nullptr)));
 
-    sf::RenderWindow window(sf::VideoMode({ WINDOW_SIZE, WINDOW_SIZE }), "Checkers Game");
+    RenderWindow window(VideoMode(Vector2u(WINDOW_SIZE, WINDOW_SIZE)), "Checkers Game");
     window.setFramerateLimit(60);
 
-    initBoard();
+    Font font;
+    if (!font.openFromFile("/System/Library/Fonts/Supplemental/Arial.ttf")) {
+        if (!font.openFromFile("C:/Windows/Fonts/arial.ttf")) {
+            font.openFromFile("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
+        }
+    }
+
+    loadBoard("save.txt");
 
     while (window.isOpen())
     {
-        while (const std::optional event = window.pollEvent())
+        while (auto event = window.pollEvent())
         {
-            if (event->is<sf::Event::Closed>())
+            if (event->is<Event::Closed>()) {
+                saveBoard("save.txt");
                 window.close();
+            }
 
-            if (const auto* mousePress = event->getIf<sf::Event::MouseButtonPressed>()) {
-                if (mousePress->button == sf::Mouse::Button::Left && currentPlayer == 1) {
-                    auto mousePos = sf::Mouse::getPosition(window);
-                    int c = mousePos.x / CELL_SIZE;
-                    int r = mousePos.y / CELL_SIZE;
-
-                    if (inside(r, c)) {
-                        if (selectedR == -1) {
-                            if (board[r][c] == currentPlayer) {
-                                selectedR = r;
-                                selectedC = c;
-                            }
+            if (auto* mousePress = event->getIf<Event::MouseButtonPressed>()) {
+                if (mousePress->button == Mouse::Button::Left) {
+                    if (gameState == STATE_MAIN_MENU) {
+                        // Menu click handling would go here
+                    }
+                    else if (gameState == STATE_SETTINGS) {
+                        Vector2i mousePos = Mouse::getPosition(window);
+                        if (mousePos.x >= 100 && mousePos.x <= 220 && mousePos.y >= 230 && mousePos.y <= 275) {
+                            darkTheme = false;
                         }
-                        else {
-                            // Try to move
-                            if (makeMove(selectedR, selectedC, r, c, currentPlayer)) {
-                                selectedR = -1;
-                                selectedC = -1;
-                                currentPlayer = 2;
-                            }
-                            else if (board[r][c] == currentPlayer) {
-                                selectedR = r;
-                                selectedC = c;
+                        else if (mousePos.x >= 260 && mousePos.x <= 380 && mousePos.y >= 230 && mousePos.y <= 275) {
+                            darkTheme = true;
+                        }
+                    }
+                    else if (gameState == STATE_PLAYER_WON || gameState == STATE_PLAYER_LOST) {
+                        initBoard();
+                        currentPlayer = 1;
+                        selectedR = -1;
+                        selectedC = -1;
+                        gameState = STATE_PLAYING;
+                    }
+                    else if (gameState == STATE_PLAYING && currentPlayer == 1) {
+                        Vector2i mousePos = Mouse::getPosition(window);
+                        int c = mousePos.x / CELL_SIZE;
+                        int r = mousePos.y / CELL_SIZE;
+
+                        if (inside(r, c)) {
+                            if (selectedR == -1) {
+                                if (getPlayer(board[r][c]) == currentPlayer) {
+                                    selectedR = r;
+                                    selectedC = c;
+                                }
                             }
                             else {
-                                selectedR = -1;
-                                selectedC = -1;
+                                if (makeMove(selectedR, selectedC, r, c, currentPlayer)) {
+                                    selectedR = -1;
+                                    selectedC = -1;
+                                    currentPlayer = 2;
+                                }
+                                else if (getPlayer(board[r][c]) == currentPlayer) {
+                                    selectedR = r;
+                                    selectedC = c;
+                                }
+                                else {
+                                    selectedR = -1;
+                                    selectedC = -1;
+                                }
                             }
                         }
                     }
                 }
             }
 
-            if (event->is<sf::Event::KeyPressed>()) {
-                const auto* keyPress = event->getIf<sf::Event::KeyPressed>();
-                if (keyPress->code == sf::Keyboard::Key::S) {
-                    saveBoard("checkers_save.txt");
+            if (event->is<Event::KeyPressed>()) {
+                auto* keyPress = event->getIf<Event::KeyPressed>();
+
+                if (keyPress->code == Keyboard::Key::Escape) {
+                    if (gameState == STATE_SETTINGS || gameState == STATE_PLAYER_WON || gameState == STATE_PLAYER_LOST) {
+                        gameState = STATE_MAIN_MENU;
+                    }
                 }
-                if (keyPress->code == sf::Keyboard::Key::L) {
-                    loadBoard("checkers_save.txt");
+
+                if (gameState == STATE_MAIN_MENU) {
+                    if (keyPress->code == Keyboard::Key::Up) {
+                        selectedMenuOption = (selectedMenuOption - 1 + 4) % 4;
+                    }
+                    else if (keyPress->code == Keyboard::Key::Down) {
+                        selectedMenuOption = (selectedMenuOption + 1) % 4;
+                    }
+                    else if (keyPress->code == Keyboard::Key::Enter) {
+                        if (selectedMenuOption == 0) {
+                            initBoard();
+                            currentPlayer = 1;
+                            selectedR = -1;
+                            selectedC = -1;
+                            gameState = STATE_PLAYING;
+                        }
+                        else if (selectedMenuOption == 1) {
+                            if (loadBoard("save.txt")) {
+                                currentPlayer = 1;
+                                selectedR = -1;
+                                selectedC = -1;
+                                gameState = STATE_PLAYING;
+                            }
+                        }
+                        else if (selectedMenuOption == 2) {
+                            gameState = STATE_SETTINGS;
+                        }
+                        else if (selectedMenuOption == 3) {
+                            saveBoard("save.txt");
+                            window.close();
+                        }
+                    }
                 }
-                if (keyPress->code == sf::Keyboard::Key::R) {
-                    initBoard();
-                    currentPlayer = 1;
-                    selectedR = -1;
-                    selectedC = -1;
+
+                if (gameState == STATE_PLAYING) {
+                    if (keyPress->code == Keyboard::Key::S) {
+                        saveBoard("save.txt");
+                    }
+                    if (keyPress->code == Keyboard::Key::L) {
+                        loadBoard("save.txt");
+                    }
+                    if (keyPress->code == Keyboard::Key::R) {
+                        initBoard();
+                        currentPlayer = 1;
+                        selectedR = -1;
+                        selectedC = -1;
+                    }
                 }
             }
         }
 
-        // AI turn
-        if (currentPlayer == 2) {
-            sf::sleep(sf::milliseconds(500));
-            aiMove();
-            currentPlayer = 1;
+        if (gameState == STATE_PLAYING) {
+            if (currentPlayer == 2) {
+                sleep(milliseconds(500));
+                aiMove();
+                currentPlayer = 1;
+            }
+
+            if (!hasAnyPieces(2) || !hasValidMoves(2)) {
+                gameState = STATE_PLAYER_WON;
+            }
+            else if (!hasAnyPieces(1) || !hasValidMoves(1)) {
+                gameState = STATE_PLAYER_LOST;
+            }
+
+            window.clear();
+            drawBoard(window);
+            window.display();
         }
-
-        if (!hasValidMoves(currentPlayer)) {
-
-
-
+        else if (gameState == STATE_MAIN_MENU) {
+            drawMenu(window, font);
         }
-
-        window.clear();
-        drawBoard(window);
-        window.display();
+        else if (gameState == STATE_SETTINGS) {
+            drawSettings(window, font);
+        }
+        else if (gameState == STATE_PLAYER_WON || gameState == STATE_PLAYER_LOST) {
+            drawEndScreen(window, font, gameState == STATE_PLAYER_WON);
+        }
     }
     return 0;
 }
